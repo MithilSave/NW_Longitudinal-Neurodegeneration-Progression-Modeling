@@ -308,7 +308,7 @@ def run_phase4(
     w_scores = ndm_results.get("w_scores", pd.DataFrame())
 
     if beta_df.empty or eigenvalues is None:
-        logger.error("NDM results missing β values or eigenvalues. Run Phase 3 first.")
+        logger.error("NDM results missing beta values or eigenvalues. Run Phase 3 first.")
         return {}
 
     # Compute predicted 5-year atrophy for each subject

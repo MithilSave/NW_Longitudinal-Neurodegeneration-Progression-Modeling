@@ -48,6 +48,22 @@ from oasis2.connectome import (
 logger = setup_logging("ndm")
 
 
+def _normalize_demo_df(demo_df: pd.DataFrame, other_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+    df = demo_df.copy()
+    if "subject_id" not in df.columns and "Subject ID" in df.columns:
+        df["subject_id"] = df["Subject ID"].astype(str).str.upper().str.strip()
+    if "session_id" not in df.columns and "MRI ID" in df.columns:
+        if other_df is not None and "session_id" in other_df.columns and len(other_df) > 0:
+            sample = str(other_df["session_id"].iloc[0])
+            if "_" in sample:
+                df["session_id"] = df["MRI ID"].astype(str).str.strip()
+            else:
+                df["session_id"] = df["MRI ID"].astype(str).apply(lambda x: x.split("_")[-1].strip())
+        else:
+            df["session_id"] = df["MRI ID"].astype(str).apply(lambda x: x.split("_")[-1].strip())
+    return df
+
+
 # ---------------------------------------------------------------------------
 # W-scores
 # ---------------------------------------------------------------------------
@@ -71,9 +87,7 @@ def compute_w_scores(
     appended (suffix _wscore).
     """
     # Merge demographics
-    demo_df = demo_df.copy()
-    if "subject_id" not in demo_df.columns and "Subject ID" in demo_df.columns:
-        demo_df["subject_id"] = demo_df["Subject ID"].str.upper().str.strip()
+    demo_df = _normalize_demo_df(demo_df, regional_volumes)
 
     join_cols = ["subject_id"]
     if "session_id" in regional_volumes.columns and "session_id" in demo_df.columns:
@@ -231,9 +245,7 @@ def fit_all_betas(
         return pd.DataFrame()
 
     # Merge time info
-    demo_df = demo_df.copy()
-    if "subject_id" not in demo_df.columns and "Subject ID" in demo_df.columns:
-        demo_df["subject_id"] = demo_df["Subject ID"].str.upper().str.strip()
+    demo_df = _normalize_demo_df(demo_df, w_scores)
 
     if time_col in demo_df.columns:
         join_cols = ["subject_id"]
@@ -280,7 +292,7 @@ def fit_all_betas(
 
     df = pd.DataFrame(results)
     logger.info(
-        f"β fitted for {df['subject_id'].nunique()} subjects "
+        f"beta fitted for {df['subject_id'].nunique()} subjects "
         f"({df['beta'].isna().sum()} failed)."
     )
     return df
@@ -304,7 +316,7 @@ def predict_future_atrophy(
     Returns a pd.Series indexed by region_name (or integer index).
     """
     if np.isnan(beta) or beta <= 0:
-        logger.warning("Invalid β value; returning NaN predictions.")
+        logger.warning("Invalid beta value; returning NaN predictions.")
         predicted = np.full(len(x0), np.nan)
     else:
         predicted = ndm_propagate(x0, t_future_years, beta, eigenvalues, eigenvectors)
@@ -335,9 +347,7 @@ def validate_ndm(
     if wscore_cols is None:
         wscore_cols = [c for c in w_scores.columns if c.endswith("_wscore")]
 
-    demo_df = demo_df.copy()
-    if "subject_id" not in demo_df.columns and "Subject ID" in demo_df.columns:
-        demo_df["subject_id"] = demo_df["Subject ID"].str.upper().str.strip()
+    demo_df = _normalize_demo_df(demo_df, w_scores)
 
     if time_col in demo_df.columns:
         join_cols = ["subject_id"]
