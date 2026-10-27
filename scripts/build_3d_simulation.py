@@ -146,26 +146,40 @@ def build_data():
             x0 = np.zeros(len(CONNECTOME_REGIONS))
 
         # Time trajectory: compute simulated atrophy from t=0 to t=5 years
+        # Effective biological diffusivity beta for connectome spread:
+        # NDM network diffusion spreads seed pathology through structural tracts.
+        # Annual longitudinal progression rate:
+        # Demented patients accumulate progressive regional atrophy over 5 years
+        # (vulnerable limbic, temporal, and frontal hubs), while nondemented controls
+        # maintain stable age-normed baseline W-scores.
+        beta_eff = min(0.35, max(0.12, beta_val * 0.05 if beta_val > 2.0 else beta_val))
+        is_demented = (group == "Demented") or (cdr >= 0.5)
+        annual_progression_rate = 0.28 if (is_demented and cdr >= 1.0) else (0.22 if is_demented else 0.04)
+
         time_steps = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
         trajectories = []
         for t in time_steps:
-            xt = ndm_propagate(x0, t, beta_val, evals, evecs)
+            # Heat kernel diffusion over connectome tracts
+            xt_diff = ndm_propagate(x0, t, beta_eff, evals, evecs)
+            # Additive longitudinal disease progression weighted by baseline regional vulnerability
+            vulnerability_weight = 1.0 + np.maximum(0.0, x0) / 2.0
+            xt = xt_diff + annual_progression_rate * t * vulnerability_weight
             trajectories.append([round(float(val), 3) for val in xt])
 
-        # Compute cognitive deficit profiles over time
+        # Compute cognitive deficit profiles over time (in W-score sigma units)
         deficit_trajectories = []
         for t_idx, xt in enumerate(trajectories):
             def_dict = {d: 0.0 for d in COGNITIVE_DOMAINS}
             weights_sum = {d: 0.0 for d in COGNITIVE_DOMAINS}
             for reg_idx, reg in enumerate(CONNECTOME_REGIONS):
-                val = max(0.0, xt[reg_idx])
+                val = xt[reg_idx]
                 for domain, w in REGION_DOMAIN_MAP.get(reg, {}).items():
                     if domain in def_dict:
                         def_dict[domain] += val * w
                         weights_sum[domain] += w
             for d in COGNITIVE_DOMAINS:
                 if weights_sum[d] > 0:
-                    def_dict[d] = round(min(1.0, def_dict[d] / weights_sum[d]), 3)
+                    def_dict[d] = round(float(def_dict[d] / weights_sum[d]), 3)
                 else:
                     def_dict[d] = 0.0
             deficit_trajectories.append(def_dict)
@@ -316,11 +330,63 @@ def main():
     bottom: 24px;
     left: 50%;
     transform: translateX(-50%);
-    width: 580px;
+    width: 780px;
+    max-width: calc(100vw - 40px);
     display: flex;
     align-items: center;
-    gap: 18px;
-    padding: 14px 22px;
+    gap: 14px;
+    padding: 12px 20px;
+  }}
+
+  .speed-control {{
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }}
+  .speed-group {{
+    display: flex;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 8px;
+    padding: 2px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }}
+  .speed-btn {{
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 600;
+    padding: 5px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }}
+  .speed-btn:hover {{
+    color: #fff;
+  }}
+  .speed-btn.active {{
+    background: var(--accent-cyan);
+    color: #030712;
+  }}
+
+  .reset-btn {{
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    color: #fff;
+    padding: 8px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    transition: all 0.2s;
+    white-space: nowrap;
+  }}
+  .reset-btn:hover {{
+    background: rgba(255, 255, 255, 0.16);
+    border-color: rgba(255, 255, 255, 0.3);
   }}
 
   h3 {{
@@ -649,12 +715,22 @@ def main():
   <button id="play-btn" class="play-btn" onclick="togglePlay()">
     <span id="play-icon">▶</span> <span id="play-text">Simulate</span>
   </button>
+  <button id="reset-btn" class="reset-btn" onclick="resetSimulation()" title="Reset to Baseline (Year 0)">
+    <span>⏮</span> <span>Reset</span>
+  </button>
+  <div class="speed-control">
+    <div class="speed-group">
+      <button class="speed-btn" onclick="setSimSpeed(0.5, this)">0.5x</button>
+      <button class="speed-btn active" onclick="setSimSpeed(1.0, this)">1x</button>
+      <button class="speed-btn" onclick="setSimSpeed(2.0, this)">2x</button>
+    </div>
+  </div>
   <div class="slider-wrapper">
     <div class="slider-header">
       <span>Timeline Horizon: <strong id="time-display" style="color: var(--accent-cyan);">Year 0.0 (Baseline)</strong></span>
-      <span style="color: var(--text-secondary); font-size: 11px;">Propagation: exp(-βLt) x₀</span>
+      <span style="color: var(--text-secondary); font-size: 11px;">Diffusion + Progression: exp(-βLt) x₀ + Δx</span>
     </div>
-    <input type="range" id="time-slider" min="0" max="5" step="0.1" value="0">
+    <input type="range" id="time-slider" min="0" max="5" step="0.05" value="0">
   </div>
 </div>
 
@@ -666,6 +742,7 @@ let currentTime = 0.0;
 let isPlaying = false;
 let playInterval = null;
 let selectedNodeId = 34; // Left-Hippocampus
+let simSpeed = 1.0;
 
 // Three.js scene elements
 let scene, camera, renderer, controls;
@@ -782,7 +859,7 @@ function createNodes() {{
 }}
 
 function getAtrophyColor(val) {{
-  // Maps atrophy W-score from <=0 (cyan) to 1.0 (green), 2.0 (yellow/orange), >=3.0 (red)
+  // Maps atrophy W-score: <= 0 (cyan) -> 1.0 (emerald green) -> 2.0 (amber orange) -> >= 3.0 (rose red)
   const c = new THREE.Color();
   if (val <= 0.0) {{
     c.setHex(0x06b6d4); // Cyan
@@ -791,9 +868,14 @@ function getAtrophyColor(val) {{
   }} else if (val < 2.0) {{
     c.lerpColors(new THREE.Color(0x10b981), new THREE.Color(0xf59e0b), val - 1.0);
   }} else {{
-    c.lerpColors(new THREE.Color(0xf59e0b), new THREE.Color(0xef4444), Math.min(1.0, (val - 2.0) / 1.5));
+    c.lerpColors(new THREE.Color(0xf59e0b), new THREE.Color(0xef4444), Math.min(1.0, (val - 2.0) / 1.0));
   }}
   return c;
+}}
+
+function getAtrophyCssColor(val) {{
+  const c = getAtrophyColor(val);
+  return "#" + c.getHexString();
 }}
 
 function updateSimulation() {{
@@ -844,22 +926,23 @@ function updateDeficitsDisplay(def0, def1, alpha) {{
   DATA.cognitive_domains.forEach(d => {{
     const v0 = def0[d] || 0;
     const v1 = def1[d] || 0;
-    const val = Math.min(1.0, v0 + (v1 - v0) * alpha);
-    const pct = Math.round(val * 100);
-
-    let barColor = "#10b981";
-    if (pct > 35) barColor = "#f59e0b";
-    if (pct > 65) barColor = "#ef4444";
+    const domainAtrophy = v0 + (v1 - v0) * alpha;
+    // Map atrophy W-score [0, 3.0] to percentage deficit [0%, 100%]
+    const pct = Math.round(Math.min(100, Math.max(0, (domainAtrophy / 3.0) * 100)));
+    // Exact same continuous color function as the 3D neurons
+    const barColor = getAtrophyCssColor(domainAtrophy);
 
     const item = document.createElement("div");
     item.className = "deficit-item";
     item.innerHTML = `
       <div class="deficit-header">
         <span>${{d.replace(/_/g, " ").toUpperCase()}}</span>
-        <span style="font-weight: 600; color: ${{barColor}};">${{pct}}%</span>
+        <span style="font-weight: 600; font-family: 'JetBrains Mono', monospace; color: ${{barColor}};">
+          ${{domainAtrophy >= 0 ? '+' : ''}}${{domainAtrophy.toFixed(2)}}σ (${{pct}}%)
+        </span>
       </div>
       <div class="deficit-bar-bg">
-        <div class="deficit-fill" style="width: ${{pct}}%; background: ${{barColor}};"></div>
+        <div class="deficit-fill" style="width: ${{pct}}%; background: ${{barColor}}; box-shadow: 0 0 8px ${{barColor}}88;"></div>
       </div>
     `;
     container.appendChild(item);
@@ -870,7 +953,9 @@ function updateNodeInspector(atrophyVal) {{
   const node = DATA.nodes[selectedNodeId];
   document.getElementById("node-name").innerText = node.label + " (" + node.name + ")";
   document.getElementById("node-sub").innerText = `${{node.hemisphere}} Hemisphere • ${{node.is_subcortical ? 'Subcortical Nucleus' : 'Cortical Parcel'}}`;
-  document.getElementById("node-atrophy-val").innerText = `${{atrophyVal >= 0 ? '+' : ''}}${{atrophyVal.toFixed(2)}} σ`;
+  const atrophyEl = document.getElementById("node-atrophy-val");
+  atrophyEl.innerText = `${{atrophyVal >= 0 ? '+' : ''}}${{atrophyVal.toFixed(2)}} σ`;
+  atrophyEl.style.color = getAtrophyCssColor(atrophyVal);
   document.getElementById("node-domains").innerText = node.domains.length ? "Associated: " + node.domains.join(", ") : "Associated: General Structural Hub";
 }}
 
@@ -912,6 +997,43 @@ function onPointerMove(e) {{
   }}
 }}
 
+function setSimSpeed(speed, btn) {{
+  simSpeed = speed;
+  document.querySelectorAll(".speed-btn").forEach(b => b.classList.remove("active"));
+  if (btn) btn.classList.add("active");
+  if (isPlaying) {{
+    clearInterval(playInterval);
+    startPlayInterval();
+  }}
+}}
+
+function resetSimulation() {{
+  if (isPlaying) togglePlay();
+  currentTime = 0.0;
+  document.getElementById("time-slider").value = 0.0;
+  document.getElementById("time-display").innerText = `Year 0.0 (Baseline)`;
+  updateSimulation();
+}}
+
+function startPlayInterval() {{
+  // 50ms tick with 0.01 years advance at 1.0x -> 25 seconds for smooth 5.0-year progression
+  playInterval = setInterval(() => {{
+    currentTime += 0.01 * simSpeed;
+    if (currentTime >= 5.0) {{
+      currentTime = 5.0;
+      document.getElementById("time-slider").value = 5.0;
+      document.getElementById("time-display").innerText = `Year 5.0 (Endpoint)`;
+      updateSimulation();
+      togglePlay();
+      return;
+    }}
+    document.getElementById("time-slider").value = currentTime;
+    const stage = currentTime < 1.5 ? "Early Spread" : (currentTime < 3.5 ? "Connectome Diffusion" : "Advanced Stage");
+    document.getElementById("time-display").innerText = `Year ${{currentTime.toFixed(2)}} (${{stage}})`;
+    updateSimulation();
+  }}, 50);
+}}
+
 function togglePlay() {{
   isPlaying = !isPlaying;
   const btn = document.getElementById("play-btn");
@@ -919,16 +1041,13 @@ function togglePlay() {{
   const text = document.getElementById("play-text");
 
   if (isPlaying) {{
+    if (currentTime >= 5.0) {{
+      currentTime = 0.0;
+    }}
     icon.innerText = "⏸";
     text.innerText = "Pause";
     btn.style.background = "var(--accent-amber)";
-    playInterval = setInterval(() => {{
-      currentTime += 0.05;
-      if (currentTime > 5.0) currentTime = 0.0;
-      document.getElementById("time-slider").value = currentTime;
-      document.getElementById("time-display").innerText = `Year ${{currentTime.toFixed(1)}}`;
-      updateSimulation();
-    }}, 40);
+    startPlayInterval();
   }} else {{
     icon.innerText = "▶";
     text.innerText = "Simulate";
@@ -974,7 +1093,8 @@ document.getElementById("subject-select").addEventListener("change", (e) => {{
 
 document.getElementById("time-slider").addEventListener("input", (e) => {{
   currentTime = parseFloat(e.target.value);
-  document.getElementById("time-display").innerText = `Year ${{currentTime.toFixed(1)}}`;
+  const stage = currentTime < 1.5 ? "Early Spread" : (currentTime < 3.5 ? "Connectome Diffusion" : "Advanced Stage");
+  document.getElementById("time-display").innerText = `Year ${{currentTime.toFixed(2)}} (${{stage}})`;
   updateSimulation();
 }});
 
